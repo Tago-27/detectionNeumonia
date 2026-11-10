@@ -109,12 +109,16 @@ def _limpiar(texto: str) -> str:
     return texto[:fin + 1] if fin != -1 else texto
 
 
-def _texto_valido(texto: str) -> bool:
-    """Filtro de seguridad y calidad del texto generado."""
-    return (len(texto) >= MIN_CARACTERES
-            and not _PROHIBIDAS.search(texto)
-            and not _SALUDO.search(texto)     # descarta respuestas tipo "¡Hola! ¿En qué puedo ayudarte?"
-            and "¿" not in texto)
+def _motivo_rechazo(texto: str) -> Optional[str]:
+    """Filtro de seguridad y calidad del texto generado. Devuelve el motivo si se rechaza, o None si es válido."""
+    if len(texto) < MIN_CARACTERES:
+        return f"texto corto ({len(texto)} caracteres)"
+    prohibida = _PROHIBIDAS.search(texto)
+    if prohibida:
+        return f"palabra no permitida: '{prohibida.group(0)}'"
+    if _SALUDO.search(texto):
+        return "respuesta conversacional en vez de recomendación"
+    return None
 
 
 def texto_respaldo(diagnostico: str, prob_neumonia: float) -> str:
@@ -127,17 +131,23 @@ def texto_respaldo(diagnostico: str, prob_neumonia: float) -> str:
 
 def generar_recomendacion(diagnostico: str, prob_neumonia: float, estilo: str) -> Dict[str, object]:
     texto: Optional[str] = None
-    if _cliente is not None:
+    motivo: Optional[str] = None   # por qué se usó el texto de respaldo (queda en los logs y en el JSON)
+    if _cliente is None:
+        motivo = "LLM no configurado (falta GEMINI_API_KEY)"
+    else:
         try:
             texto = _limpiar(_llamar_llm(construir_prompt(diagnostico, prob_neumonia, estilo)))
+            motivo = "respuesta vacía del LLM" if not texto else _motivo_rechazo(texto)
         except Exception as exc:   # sin red, clave inválida, cuota gratuita agotada (429), timeout...
-            print(f"Error del LLM: {exc}")
-        if texto and not _texto_valido(texto):
+            motivo = f"error del LLM: {type(exc).__name__}: {str(exc)[:200]}"
+        if motivo:
+            print(f"Texto de respaldo -> {motivo}")
             texto = None
     generado = texto is not None
     return {
         "recomendacion": texto if generado else texto_respaldo(diagnostico, prob_neumonia),
         "generado_por_llm": generado,
+        "motivo_respaldo": motivo,
         "modelo_llm": MODELO_LLM if generado else None,
         "estilo": estilo,
         "consejos": CONSEJOS[diagnostico],

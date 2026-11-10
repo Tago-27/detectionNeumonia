@@ -215,7 +215,7 @@
     document.getElementById("recomendacion").textContent = r.recomendacion;
     document.getElementById("metaRecomendacion").textContent = r.generado_por_llm
       ? `Generada por ${r.modelo_llm} · estilo "${r.estilo}" elegido por el agente RL (${r.rl.modo})`
-      : `Texto de respaldo (el LLM no estaba disponible) · estilo "${r.estilo}"`;
+      : `Texto de respaldo (${r.motivo_respaldo || "el LLM no estaba disponible"}) · estilo "${r.estilo}"`;
     document.getElementById("avisoRecomendacion").textContent = r.aviso;
     ultimoRL = r.rl;
     activarFeedback(true);

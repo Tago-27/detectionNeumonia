@@ -120,6 +120,7 @@ def salud():
     """Permite comprobar que el servidor, el modelo y el LLM están listos."""
     return {"estado": "ok", "modelo": RUTA_MODELO.name, "filtro": CONFIG["filtro"], "umbral": UMBRAL,
             "llm_cargado": llm_cargado(), "modelo_llm": recomendaciones_llm.MODELO_LLM,
+            "modelo_llm_segundo_intento": recomendaciones_llm.MODELO_LIGERO,
             "tabla_q": AGENTE.almacen.descripcion,
             "feedback_recibido": AGENTE.total_feedback}
 

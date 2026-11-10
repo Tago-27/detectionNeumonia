@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clasificador de radiografías de tórax</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* ---------- Colores y tipografía (tokens) ---------- */
+  :root {
+    --fondo: #E9EFF3;        /* luz del negatoscopio */
+    --pelicula: #1A2329;     /* panel oscuro donde se ve la radiografía */
+    --tinta: #16324A;        /* texto principal */
+    --tenue: #5B6B78;        /* texto secundario */
+    --normal: #1F7A6C;       /* color de NORMAL */
+    --neumonia: #B4611C;     /* color de PNEUMONIA */
+    --linea: #C9D5DD;
+    --tipo: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--fondo); color: var(--tinta);
+    font-family: var(--tipo); font-size: 1.0625rem; line-height: 1.5;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 2.5rem 1.25rem 3rem; }
+  h1 { font-size: clamp(1.75rem, 4vw, 2.5rem); line-height: 1.15; margin: 0 0 .5rem; max-width: 22ch; }
+  .intro { color: var(--tenue); margin: 0 0 2rem; max-width: 60ch; }
+
+  /* ---------- Distribución: visor | resultado ---------- */
+  .mesa { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1.5rem; align-items: start; }
+  @media (max-width: 760px) { .mesa { grid-template-columns: 1fr; } }
+
+  /* ---------- Visor (zona para soltar la imagen) ---------- */
+  .visor {
+    background: var(--pelicula); border-radius: 14px; aspect-ratio: 1 / 1;
+    display: grid; place-items: center; position: relative; overflow: hidden;
+    border: 2px dashed transparent; cursor: pointer; color: #C8D3DA; text-align: center;
+  }
+  .visor.arrastrando { border-color: #8FB3C9; }
+  .visor:focus-visible { outline: 3px solid #4C8DB5; outline-offset: 3px; }
+  .visor img { width: 100%; height: 100%; object-fit: contain; display: none; }
+  .visor.con-imagen img { display: block; }
+  .visor.con-imagen .aviso { display: none; }
+  .aviso { padding: 1.5rem; max-width: 30ch; }
+  .aviso strong { display: block; font-size: 1.15rem; color: #fff; margin-bottom: .35rem; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+  .acciones { display: flex; gap: .75rem; margin-top: 1rem; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 700; border: 0; border-radius: 10px; padding: .8rem 1.3rem; cursor: pointer;
+  }
+  .primario { background: var(--tinta); color: #fff; }
+  .primario:disabled { background: #93A4B1; cursor: not-allowed; }
+  .secundario { background: transparent; color: var(--tinta); box-shadow: inset 0 0 0 2px var(--linea); }
+  button:focus-visible { outline: 3px solid #4C8DB5; outline-offset: 2px; }
+
+  /* ---------- Panel de resultado ---------- */
+  .resultado { background: #fff; border-radius: 14px; padding: 1.75rem; border: 1px solid var(--linea); }
+  .estado { color: var(--tenue); margin: 0; }
+  .diagnostico { font-size: clamp(2.2rem, 6vw, 3.4rem); font-weight: 700; line-height: 1; margin: .25rem 0 1.5rem; }
+  .diagnostico.NORMAL { color: var(--normal); }
+  .diagnostico.PNEUMONIA { color: var(--neumonia); }
+
+  .fila { margin-bottom: 1.25rem; }
+  .fila-cabecera { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: .35rem; }
+  .barra { height: 14px; background: #EDF1F4; border-radius: 7px; position: relative; overflow: visible; }
+  .relleno { height: 100%; border-radius: 7px; width: 0; transition: width .5s ease; }
+  .relleno.n { background: var(--normal); }
+  .relleno.p { background: var(--neumonia); }
+  .marca-umbral { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--tinta); }
+  .nota-umbral { font-size: .9rem; color: var(--tenue); margin-top: .35rem; }
+  .error { color: #9B2C2C; font-weight: 700; }
+  .oculto { display: none; }
+
+  /* ---------- Recomendación del LLM y feedback (RL) ---------- */
+  .recomendacion { border-top: 1px solid var(--linea); margin-top: 1.5rem; padding-top: 1.25rem; }
+  .recomendacion h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+  .recomendacion p { margin: 0 0 .75rem; }
+  .meta { font-size: .88rem; color: var(--tenue); }
+  .feedback { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .5rem; }
+  .feedback button { padding: .55rem 1rem; }
+  .feedback button:disabled { opacity: .55; cursor: not-allowed; }
+  .gracias { font-size: .92rem; color: var(--normal); font-weight: 700; }
+
+  .advertencia { margin-top: 2rem; font-size: .92rem; color: var(--tenue); max-width: 70ch; }
+  @media (prefers-reduced-motion: reduce) { .relleno { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Clasificador de radiografías de tórax</h1>
+  <p class="intro">Sube una radiografía frontal de tórax. La CNN del proyecto estima la probabilidad de NORMAL y de PNEUMONIA, y un modelo de lenguaje redacta una recomendación que puedes calificar.</p>
+
+  <div class="mesa">
+    <section aria-label="Radiografía">
+      <label class="visor" id="visor" tabindex="0" for="archivo">
+        <img id="vista" alt="Radiografía seleccionada">
+        <span class="aviso"><strong>Arrastra la radiografía aquí</strong>o haz clic para elegir un archivo JPG o PNG</span>
+      </label>
+      <input type="file" id="archivo" accept="image/png, image/jpeg">
+      <div class="acciones">
+        <button class="primario" id="analizar" disabled>Analizar radiografía</button>
+        <button class="secundario" id="limpiar" type="button">Elegir otra</button>
+      </div>
+    </section>
+
+    <section class="resultado" aria-live="polite">
+      <p class="estado" id="estado">Todavía no hay ninguna imagen analizada.</p>
+      <div id="salida" class="oculto">
+        <div class="diagnostico" id="diagnostico"></div>
+        <div class="fila">
+          <div class="fila-cabecera"><span>P(NORMAL)</span><span id="txtNormal"></span></div>
+          <div class="barra"><div class="relleno n" id="barNormal"></div></div>
+        </div>
+        <div class="fila">
+          <div class="fila-cabecera"><span>P(PNEUMONIA)</span><span id="txtNeumonia"></span></div>
+          <div class="barra"><div class="relleno p" id="barNeumonia"></div><div class="marca-umbral" id="marca"></div></div>
+          <p class="nota-umbral" id="notaUmbral"></p>
+        </div>
+
+        <div class="recomendacion">
+          <h2>Recomendación</h2>
+          <p id="recomendacion"></p>
+          <p class="meta" id="metaRecomendacion"></p>
+          <p class="meta" id="avisoRecomendacion"></p>
+          <div class="feedback">
+            <span>¿Te resultó útil?</span>
+            <button class="secundario" id="meGusta" type="button">👍 Me gusta</button>
+            <button class="secundario" id="noMeGusta" type="button">👎 No me gusta</button>
+            <span class="gracias" id="gracias" role="status"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <p class="advertencia">Proyecto académico. El resultado no es un diagnóstico médico y no reemplaza la valoración de un profesional de la salud.</p>
+</main>
+
+<script>
+  // ---------- Referencias a los elementos de la página ----------
+  const API = "";   // vacío = mismo servidor que entrega esta página (FastAPI)
+  const visor = document.getElementById("visor");
+  const archivo = document.getElementById("archivo");
+  const vista = document.getElementById("vista");
+  const botonAnalizar = document.getElementById("analizar");
+  const estado = document.getElementById("estado");
+  const salida = document.getElementById("salida");
+  let imagenElegida = null;
+
+  // ---------- 1. Elegir la imagen (clic o arrastrar) ----------
+  function elegir(file) {
+    if (!file || !file.type.startsWith("image/")) {
+      mostrarError("El archivo elegido no es una imagen. Usa JPG o PNG.");
+      return;
+    }
+    imagenElegida = file;
+    vista.src = URL.createObjectURL(file);
+    visor.classList.add("con-imagen");
+    botonAnalizar.disabled = false;
+    salida.classList.add("oculto");
+    estado.className = "estado";
+    estado.textContent = `Imagen lista: ${file.name}`;
+  }
+  archivo.addEventListener("change", e => elegir(e.target.files[0]));
+  visor.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); archivo.click(); } });
+  ["dragenter", "dragover"].forEach(ev => visor.addEventListener(ev, e => { e.preventDefault(); visor.classList.add("arrastrando"); }));
+  ["dragleave", "drop"].forEach(ev => visor.addEventListener(ev, e => { e.preventDefault(); visor.classList.remove("arrastrando"); }));
+  visor.addEventListener("drop", e => elegir(e.dataTransfer.files[0]));
+
+  document.getElementById("limpiar").addEventListener("click", () => {
+    imagenElegida = null; archivo.value = ""; vista.removeAttribute("src");
+    visor.classList.remove("con-imagen"); botonAnalizar.disabled = true;
+    salida.classList.add("oculto"); estado.className = "estado";
+    estado.textContent = "Todavía no hay ninguna imagen analizada.";
+  });
+
+  // ---------- 2. Enviar la imagen por HTTP POST a FastAPI ----------
+  botonAnalizar.addEventListener("click", async () => {
+    if (!imagenElegida) return;
+    const datos = new FormData();
+    datos.append("imagen", imagenElegida);       // el nombre "imagen" coincide con la API
+    botonAnalizar.disabled = true;
+    estado.className = "estado";
+    estado.textContent = "Analizando la radiografía y generando la recomendación (puede tardar unos segundos)…";
+    try {
+      const resp = await fetch(`${API}/predecir`, { method: "POST", body: datos });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.detail || `Error ${resp.status}`);
+      mostrarResultado(json);
+    } catch (err) {
+      mostrarError(`No se pudo analizar la imagen: ${err.message}. Comprueba que el servidor FastAPI está en marcha.`);
+    } finally {
+      botonAnalizar.disabled = false;
+    }
+  });
+
+  // ---------- 3. Mostrar la respuesta JSON en la interfaz ----------
+  function porcentaje(x) { return (x * 100).toFixed(1) + " %"; }
+  function mostrarResultado(r) {
+    estado.textContent = "Resultado del modelo";
+    const d = document.getElementById("diagnostico");
+    d.textContent = r.diagnostico;
+    d.className = "diagnostico " + r.diagnostico;
+    document.getElementById("txtNormal").textContent = porcentaje(r.prob_normal);
+    document.getElementById("txtNeumonia").textContent = porcentaje(r.prob_neumonia);
+    document.getElementById("barNormal").style.width = porcentaje(r.prob_normal).replace(" ", "");
+    document.getElementById("barNeumonia").style.width = porcentaje(r.prob_neumonia).replace(" ", "");
+    document.getElementById("marca").style.left = `calc(${r.umbral * 100}% - 1px)`;
+    document.getElementById("notaUmbral").textContent =
+      `La línea marca el umbral (${porcentaje(r.umbral)}), elegido en validación: por encima se diagnostica PNEUMONIA.`;
+
+    document.getElementById("recomendacion").textContent = r.recomendacion;
+    document.getElementById("metaRecomendacion").textContent = r.generado_por_llm
+      ? `Generada por ${r.modelo_llm} · estilo "${r.estilo}" elegido por el agente RL (${r.rl.modo})`
+      : `Texto de respaldo (el LLM no estaba disponible) · estilo "${r.estilo}"`;
+    document.getElementById("avisoRecomendacion").textContent = r.aviso;
+    ultimoRL = r.rl;
+    activarFeedback(true);
+    document.getElementById("gracias").textContent = "";
+    salida.classList.remove("oculto");
+  }
+
+  // ---------- 4. Feedback del usuario → aprendizaje por refuerzo ----------
+  let ultimoRL = null;   // estado y acción que devolvió /predecir
+  const botonesFeedback = [document.getElementById("meGusta"), document.getElementById("noMeGusta")];
+  function activarFeedback(activo) { botonesFeedback.forEach(b => b.disabled = !activo); }
+
+  async function calificar(recompensa) {   // +1 me gusta, -1 no me gusta
+    if (!ultimoRL) return;
+    activarFeedback(false);                // una calificación por recomendación
+    const gracias = document.getElementById("gracias");
+    try {
+      const resp = await fetch(`${API}/rl/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ estado: ultimoRL.estado, accion: ultimoRL.accion, recompensa }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.detail || `Error ${resp.status}`);
+      gracias.textContent = "¡Gracias! El agente aprendió de tu calificación.";
+      ultimoRL = null;
+    } catch (err) {
+      gracias.textContent = `No se pudo enviar: ${err.message}`;
+      activarFeedback(true);
+    }
+  }
+  botonesFeedback[0].addEventListener("click", () => calificar(1));
+  botonesFeedback[1].addEventListener("click", () => calificar(-1));
+  function mostrarError(msg) {
+    salida.classList.add("oculto");
+    estado.className = "estado error";
+    estado.textContent = msg;
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+{
+  "img_h": 224,
+  "img_w": 224,
+  "canales": 1,
+  "clases": [
+    "NORMAL",
+    "PNEUMONIA"
+  ],
+  "redimension": "cv2.resize INTER_AREA, escala de grises",
+  "normalizacion": "Rescaling(1/255) dentro del modelo",
+  "filtro": "clahe_sharpen",
+  "kernels": {
+    "sharpen": [
+      [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      [
+        -1.0,
+        5.0,
+        -1.0
+      ],
+      [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    ],
+    "edge": [
+      [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      [
+        -1.0,
+        8.0,
+        -1.0
+      ],
+      [
+        -1.0,
+        -1.0,
+        -1.0
+      ]
+    ],
+    "strong_edge": [
+      [
+        -2.0,
+        -2.0,
+        -2.0
+      ],
+      [
+        -2.0,
+        16.0,
+        -2.0
+      ],
+      [
+        -2.0,
+        -2.0,
+        -2.0
+      ]
+    ]
+  },
+  "clahe": {
+    "clip_limit": 2.0,
+    "tile_grid": [
+      8,
+      8
+    ]
+  },
+  "umbral": 0.525,
+  "criterio_umbral": "máxima accuracy balanceada en VALIDACIÓN",
+  "politica_augmentacion": "moderada",
+  "parametros_augmentacion": {
+    "flip": "horizontal",
+    "rotacion": 0.05,
+    "traslacion": 0.05,
+    "zoom": 0.1,
+    "contraste": 0.1
+  },
+  "arquitectura": {
+    "bloques_filtros": [
+      32,
+      64,
+      128,
+      192,
+      256,
+      512
+    ],
+    "conv_por_bloque": 2,
+    "densas": [
+      512,
+      64
+    ],
+    "salida": "Dense(2, softmax)",
+    "ultima_capa_conv": "relu6b"
+  },
+  "entrenamiento": {
+    "optimizador": "Adam",
+    "lr_inicial": 0.0005,
+    "max_epochs": 50,
+    "epocas_ejecutadas": 41,
+    "batch_size": 32,
+    "class_weight": {
+      "0": 1.9365671641791045,
+      "1": 0.674025974025974
+    },
+    "seed": 42
+  },
+  "metricas_validacion": {
+    "umbral": 0.525,
+    "accuracy": 0.9778420038535646,
+    "error": 0.022157996146435432,
+    "loss": 0.055998505196680586,
+    "precision": 0.9933949801849405,
+    "recall_sensibilidad": 0.9766233766233766,
+    "especificidad": 0.9813432835820896,
+    "f1": 0.9849377865094957,
+    "auc": 0.9979017251405311,
+    "acc_balanceada": 0.9789833301027331,
+    "TN": 263,
+    "FP": 5,
+    "FN": 18,
+    "TP": 752
+  },
+  "metricas_test": {
+    "umbral": 0.525,
+    "accuracy": 0.8669871794871795,
+    "error": 0.13301282051282048,
+    "loss": 0.604065666505628,
+    "precision": 0.8272921108742004,
+    "recall_sensibilidad": 0.9948717948717949,
+    "especificidad": 0.6538461538461539,
+    "f1": 0.9033760186263097,
+    "auc": 0.9645353933815473,
+    "acc_balanceada": 0.8243589743589743,
+    "TN": 153,
+    "FP": 81,
+    "FN": 2,
+    "TP": 388
+  },
+  "tensorflow": "2.21.0"
+}

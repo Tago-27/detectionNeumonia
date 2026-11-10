@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+.env
+# tabla Q local del agente RL (en Render va a Postgres)
+datos/
+# el despliegue usa el .tflite; el .keras (94 MB) solo sirve para reconvertir
+modelo/*.keras

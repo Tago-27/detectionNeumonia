@@ -1,0 +1,12 @@
+# Dependencias de la API (CNN en TFLite + LLM Gemini + RL). Caben en Render gratis (512 MB).
+# Versiones fijas: con ellas se comprobó la API completa.
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+ai-edge-litert==2.3.0          # ejecuta modelo/*.tflite sin TensorFlow completo
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+google-genai==3.0.0            # LLM: API de Gemini
+psycopg[binary]==3.3.8         # tabla Q del agente RL en Postgres
+# Para reconvertir el modelo (herramientas/convertir_a_tflite.py) hace falta además, solo en local:
+#   tensorflow==2.20.0 keras==3.15.1

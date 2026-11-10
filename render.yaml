@@ -1,0 +1,14 @@
+# Blueprint de Render: en el panel, New → Blueprint y elige este repositorio.
+services:
+  - type: web
+    name: deteccion-neumonia
+    runtime: python
+    plan: free                      # 512 MB: la CNN va en TFLite y el LLM es la API de Gemini
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /salud
+    envVars:
+      - key: GEMINI_API_KEY         # clave gratuita: https://aistudio.google.com/apikey
+        sync: false                 # Render la pide al crear el Blueprint (no se guarda en el repositorio)
+      - key: DATABASE_URL           # Postgres gratuito (Neon o Supabase): conserva la tabla Q del agente RL
+        sync: false

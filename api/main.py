@@ -11,10 +11,24 @@ igual, con textos de respaldo y la tabla Q en datos/q_table_recomendaciones.json
 """
 import json
 import os
+import sys
 import threading
+import time
 from pathlib import Path
 
-import numpy as np
+# Sin terminal (Render), Python acumula lo que imprime y los logs no se ven hasta el final o nunca:
+# así cada línea aparece en los logs al momento.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+_INICIO = time.time()
+
+
+def log_arranque(mensaje: str) -> None:
+    print(f"[arranque {time.time() - _INICIO:5.1f}s] {mensaje}")
+
+
+log_arranque("importando librerías...")
+import numpy as np  # noqa: E402
 from ai_edge_litert.interpreter import Interpreter
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,17 +82,21 @@ class ModeloTFLite:
 RUTA_MODELO = _unico("*.tflite")
 RUTA_CONFIG = _unico("config*.json")
 CONFIG = json.loads(RUTA_CONFIG.read_text(encoding="utf-8"))
+log_arranque(f"cargando la CNN ({RUTA_MODELO.name})...")
 MODELO = ModeloTFLite(RUTA_MODELO)
 FILTRO = construir_filtro(CONFIG)
 CLASES = CONFIG["clases"]
 UMBRAL = float(CONFIG["umbral"])
 TAMANO_MAXIMO = 10 * 1024 * 1024   # 10 MB
 
+log_arranque("conectando con Gemini...")
 cargar_llm()
 # En Render gratis los archivos se borran al apagar el servicio: con DATABASE_URL la tabla Q va a Postgres.
 URL_BD = os.getenv("DATABASE_URL")
+log_arranque("cargando la tabla Q del agente RL" + (" desde Postgres..." if URL_BD else "..."))
 AGENTE = AgenteRecomendaciones(AlmacenPostgres(URL_BD) if URL_BD else AlmacenArchivo(RUTA_Q_TABLE))
-print(f"Agente RL: tabla Q en {AGENTE.almacen.descripcion} ({AGENTE.total_feedback} feedback acumulados)")
+log_arranque(f"agente RL listo: tabla Q en {AGENTE.almacen.descripcion} ({AGENTE.total_feedback} feedback acumulados)")
+log_arranque("API lista, abriendo el puerto")
 
 app = FastAPI(title="API Neumonía CNN + LLM + RL", version="3.0")
 # CORS permite que una página abierta desde otro origen (p. ej. otro puerto) llame a la API.

@@ -49,7 +49,7 @@ python herramientas/convertir_a_tflite.py ruta/radiografia1.jpg ruta/radiografia
 ## LLM: cómo se genera la recomendación
 
 - **Input:** el diagnóstico y la probabilidad de neumonía que da la CNN, más una lista cerrada de consejos validados (`CONSEJOS`) y el estilo elegido por el agente RL.
-- **Modelo:** Google Gemini, por defecto `gemini-flash-latest`, llamado por su API gratuita. Se puede cambiar con la variable `MODELO_LLM`.
+- **Modelo:** Google Gemini, llamado por su API gratuita. Al arrancar, la API consulta los modelos disponibles para la clave y elige el Gemini Flash estable más reciente (Google renombra sus modelos a menudo). Se puede fijar uno con la variable `MODELO_LLM`.
 - **Filtro:** se descarta el texto si tiene menos de 200 caracteres, menciona medicamentos o dosis, promete curas, saluda o hace preguntas. En ese caso, o si Gemini falla (sin clave, cuota agotada, timeout), se responde con un texto de respaldo armado con los consejos, también de más de 200 caracteres. El JSON indica cuál se usó con `generado_por_llm`.
 
 ## Aprendizaje por refuerzo

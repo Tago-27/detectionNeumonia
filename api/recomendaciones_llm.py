@@ -9,12 +9,13 @@ Pipeline:  predicción (diagnóstico + probabilidad) → prompt → LLM (Gemini)
 
 Variables de entorno:
   GEMINI_API_KEY    clave gratuita de https://aistudio.google.com/apikey (sin ella se usan los textos de respaldo)
-  MODELO_LLM        modelo de Gemini (por defecto "gemini-flash-latest", que apunta siempre al Flash actual)
+  MODELO_LLM        modelo de Gemini (opcional). Si no se indica o no está disponible para la clave, al arrancar
+                    se elige solo el Gemini Flash más reciente de la lista de modelos de la cuenta.
   USAR_LLM=0        desactiva el LLM (pruebas sin internet)
 """
 import os
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 MIN_CARACTERES = 200
 AVISO = "Resultado experimental, no es un diagnóstico médico. Ante cualquier duda, consulte a un profesional de la salud."
@@ -48,27 +49,64 @@ ESTILOS = {
 _PROHIBIDAS = re.compile(r"\b(mg|ml|dosis|miligramos|amoxicilina|azitromicina|ibuprofeno|acetaminof[eé]n|paracetamol|"
                          r"garantiz\w*|curar\w*|seguro que)\b", re.IGNORECASE)
 _SALUDO = re.compile(r"^\W*(hola|buen[oa]s)\b|estoy aqu[ií] para", re.IGNORECASE)
-MODELO_LLM = os.getenv("MODELO_LLM", "gemini-flash-latest")
+MODELO_LLM: Optional[str] = os.getenv("MODELO_LLM") or None   # se completa en cargar_llm()
+# Variantes que no sirven para generar texto normal (o son experimentales) y no se eligen automáticamente.
+_VARIANTES_EXCLUIDAS = ("lite", "image", "tts", "audio", "live", "embedding", "thinking", "exp", "preview", "native")
 INSTRUCCIONES_SISTEMA = ("Redactas recomendaciones de salud en español para pacientes. Escribes solo el texto de la "
                          "recomendación, en prosa, sin saludos, sin preguntas, sin listas, sin títulos y sin formato "
                          "markdown. No inventas información: solo reformulas las ideas que te dan. "
                          "No mencionas medicamentos ni dosis.")
 _cliente = None
+_motivo_sin_llm: Optional[str] = None   # por qué no hay LLM (se muestra en la web junto al texto de respaldo)
+
+
+def _version(nombre: str) -> float:
+    encontrada = re.search(r"gemini-(\d+(?:\.\d+)?)", nombre)
+    return float(encontrada.group(1)) if encontrada else 0.0
+
+
+def elegir_modelo(disponibles: List[str], preferido: Optional[str]) -> Optional[str]:
+    """Usa el modelo pedido si existe; si no, el Gemini Flash estable más reciente de la lista."""
+    nombres = [n.removeprefix("models/") for n in disponibles]
+    if preferido and preferido.removeprefix("models/") in nombres:
+        return preferido.removeprefix("models/")
+    flash = [n for n in nombres if n.startswith("gemini-") and "flash" in n]
+    estables = [n for n in flash if not any(v in n for v in _VARIANTES_EXCLUIDAS)]
+    candidatos = estables or flash
+    # Mayor versión primero; a igual versión, el nombre más corto (gemini-2.5-flash antes que gemini-2.5-flash-001).
+    return max(candidatos, key=lambda n: (_version(n), -len(n))) if candidatos else None
 
 
 def cargar_llm() -> None:
-    """Prepara el cliente de Gemini una sola vez, al arrancar la API."""
-    global _cliente
+    """Prepara el cliente de Gemini y elige el modelo una sola vez, al arrancar la API."""
+    global _cliente, MODELO_LLM, _motivo_sin_llm
     if os.getenv("USAR_LLM", "1") != "1":
-        print("LLM desactivado (USAR_LLM=0): se usarán textos de respaldo.")
-        return
-    if not os.getenv("GEMINI_API_KEY"):
-        print("Advertencia: falta GEMINI_API_KEY. Se usarán textos de respaldo.")
+        _motivo_sin_llm = "LLM desactivado (USAR_LLM=0)"
+    elif not os.getenv("GEMINI_API_KEY"):
+        _motivo_sin_llm = "LLM no configurado (falta GEMINI_API_KEY)"
+    if _motivo_sin_llm:
+        print(f"Advertencia: {_motivo_sin_llm}. Se usarán textos de respaldo.")
         return
     from google import genai
     from google.genai import types
     # timeout en milisegundos: si Gemini tarda demasiado se responde con el texto de respaldo.
-    _cliente = genai.Client(http_options=types.HttpOptions(timeout=25_000))
+    cliente = genai.Client(http_options=types.HttpOptions(timeout=25_000))
+    # Google renombra sus modelos a menudo: se consulta la lista real de la cuenta en vez de fijar un nombre.
+    try:
+        disponibles = [m.name for m in cliente.models.list()
+                       if not m.supported_actions or "generateContent" in m.supported_actions]
+    except Exception as exc:
+        _motivo_sin_llm = f"no se pudo conectar con Gemini al arrancar: {str(exc)[:200]}"
+        print(f"Advertencia: {_motivo_sin_llm}. Se usarán textos de respaldo.")
+        return
+    elegido = elegir_modelo(disponibles, MODELO_LLM)
+    if not elegido:
+        _motivo_sin_llm = "la clave de Gemini no tiene modelos Flash disponibles"
+        print(f"Advertencia: {_motivo_sin_llm} ({disponibles[:10]}).")
+        return
+    if MODELO_LLM and elegido != MODELO_LLM.removeprefix("models/"):
+        print(f"Advertencia: MODELO_LLM='{MODELO_LLM}' no está disponible; se usa '{elegido}'.")
+    MODELO_LLM, _cliente = elegido, cliente
     print(f"LLM listo: {MODELO_LLM} (API de Gemini)")
 
 
@@ -133,7 +171,7 @@ def generar_recomendacion(diagnostico: str, prob_neumonia: float, estilo: str) -
     texto: Optional[str] = None
     motivo: Optional[str] = None   # por qué se usó el texto de respaldo (queda en los logs y en el JSON)
     if _cliente is None:
-        motivo = "LLM no configurado (falta GEMINI_API_KEY)"
+        motivo = _motivo_sin_llm or "LLM no disponible"
     else:
         try:
             texto = _limpiar(_llamar_llm(construir_prompt(diagnostico, prob_neumonia, estilo)))

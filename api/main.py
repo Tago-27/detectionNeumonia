@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from agente_rl import AgenteRecomendaciones, AlmacenArchivo, AlmacenPostgres
 from preprocesamiento import bytes_a_tensor, construir_filtro
+import recomendaciones_llm
 from recomendaciones_llm import cargar_llm, generar_recomendacion, llm_cargado
 
 BASE = Path(__file__).resolve().parent.parent          # carpeta raíz del proyecto
@@ -100,7 +101,8 @@ def pagina():
 def salud():
     """Permite comprobar que el servidor, el modelo y el LLM están listos."""
     return {"estado": "ok", "modelo": RUTA_MODELO.name, "filtro": CONFIG["filtro"], "umbral": UMBRAL,
-            "llm_cargado": llm_cargado(), "tabla_q": AGENTE.almacen.descripcion,
+            "llm_cargado": llm_cargado(), "modelo_llm": recomendaciones_llm.MODELO_LLM,
+            "tabla_q": AGENTE.almacen.descripcion,
             "feedback_recibido": AGENTE.total_feedback}
 
 

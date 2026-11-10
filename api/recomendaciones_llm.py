@@ -83,11 +83,12 @@ def elegir_modelo(disponibles: List[str], preferido: Optional[str]) -> Optional[
     return max(candidatos, key=lambda n: (_version(n), -len(n))) if candidatos else None
 
 
-def elegir_modelo_ligero(disponibles: List[str]) -> Optional[str]:
+def elegir_modelo_ligero(disponibles: List[str], principal: Optional[str] = None) -> Optional[str]:
     """El Gemini Flash-Lite estable más reciente (más rápido y con más cuota gratuita)."""
     nombres = [n.removeprefix("models/") for n in disponibles]
     excluidas = [v for v in _VARIANTES_EXCLUIDAS if v != "lite"]
-    lite = [n for n in nombres if n.startswith("gemini-") and "flash-lite" in n and not any(v in n for v in excluidas)]
+    lite = [n for n in nombres if n.startswith("gemini-") and "flash-lite" in n and not any(v in n for v in excluidas)
+            and n != principal]
     return max(lite, key=lambda n: (_version(n), -len(n))) if lite else None
 
 
@@ -119,8 +120,8 @@ def cargar_llm() -> None:
         return
     if MODELO_LLM and elegido != MODELO_LLM.removeprefix("models/"):
         print(f"Advertencia: MODELO_LLM='{MODELO_LLM}' no está disponible; se usa '{elegido}'.")
-    ligero = elegir_modelo_ligero(disponibles)
-    MODELO_LLM, MODELO_LIGERO, _cliente = elegido, (ligero if ligero != elegido else None), cliente
+    ligero = elegir_modelo_ligero(disponibles, elegido)
+    MODELO_LLM, MODELO_LIGERO, _cliente = elegido, ligero, cliente
     print(f"LLM listo: {MODELO_LLM} (API de Gemini); segundo intento con: {MODELO_LIGERO or 'ninguno'}")
 
 

@@ -12,3 +12,5 @@ services:
         sync: false                 # Render la pide al crear el Blueprint (no se guarda en el repositorio)
       - key: DATABASE_URL           # Postgres gratuito (Neon o Supabase): conserva la tabla Q del agente RL
         sync: false
+      - key: MODELO_LLM             # Flash-Lite responde en segundos; si dejara de existir, la API elige otro solo
+        value: gemini-3.5-flash-lite

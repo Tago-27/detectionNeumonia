@@ -5,6 +5,7 @@ Pipeline:  imagen --POST /predecir--> preprocesamiento --> CNN (predicción)
            --> agente RL elige el estilo --> LLM genera la recomendación con la predicción como input --> JSON
            usuario: 1 a 5 estrellas --POST /rl/feedback--> agente RL actualiza su tabla Q
            GET /rl/historial --> recompensas y promedio móvil (gráfica de la web)
+           POST /asistente: diagnóstico + probabilidad + pregunta --> LLM --> respuesta (máx. 4 oraciones)
 
 Ejecutar (desde api/):  uvicorn main:app --reload
 Variables de entorno: GEMINI_API_KEY (LLM) y DATABASE_URL (tabla Q en Postgres). Sin ellas funciona
@@ -34,10 +35,11 @@ from ai_edge_litert.interpreter import Interpreter
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+import asistente
 from agente_rl import AgenteRecomendaciones, AlmacenArchivo, AlmacenPostgres
 from preprocesamiento import bytes_a_tensor, construir_filtro
 import recomendaciones_llm
@@ -91,6 +93,7 @@ FILTRO = construir_filtro(CONFIG)
 CLASES = CONFIG["clases"]
 UMBRAL = float(CONFIG["umbral"])
 TAMANO_MAXIMO = 10 * 1024 * 1024   # 10 MB
+METRICAS = asistente.metricas_desde_config(CONFIG)   # confiabilidad del modelo, para el asistente
 
 log_arranque("conectando con Gemini...")
 cargar_llm()
@@ -111,6 +114,12 @@ class Feedback(BaseModel):
     accion: str
     estrellas: Optional[int] = Field(None, ge=1, le=5)   # 1 a 5 estrellas (lo que envía la web)
     recompensa: Optional[float] = None                   # alternativa directa: -1 a +1
+
+
+class Pregunta(BaseModel):
+    diagnostico: Literal["NORMAL", "PNEUMONIA"]
+    prob_neumonia: float = Field(..., ge=0, le=1)
+    pregunta: str = Field(..., min_length=3, max_length=300)
 
 
 @app.get("/")
@@ -172,6 +181,18 @@ def feedback(f: Feedback):
         print(f"Error guardando la tabla Q: {err}")
         raise HTTPException(status_code=503, detail="No se pudo guardar la calificación. Inténtalo de nuevo.")
     return {"estado": "ok", "mensaje": "Gracias, su calificación actualizó al agente.", "datos": datos}
+
+
+@app.get("/asistente/preguntas")
+def preguntas_sugeridas():
+    """Preguntas sugeridas que muestra la web (también se puede escribir cualquier otra)."""
+    return {"preguntas": list(asistente.PREGUNTAS_SUGERIDAS.values())}
+
+
+@app.post("/asistente")
+def preguntar(p: Pregunta):
+    """Responde una pregunta del usuario con el LLM, usando el diagnóstico y la probabilidad como contexto."""
+    return asistente.responder(p.diagnostico, p.prob_neumonia, p.pregunta, METRICAS)
 
 
 @app.get("/rl/estado")

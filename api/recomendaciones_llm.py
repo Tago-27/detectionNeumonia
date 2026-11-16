@@ -139,14 +139,14 @@ def construir_prompt(diagnostico: str, prob_neumonia: float, estilo: str) -> str
             f"{ESTILOS[estilo]} Empieza mencionando el resultado y termina recordando que debe confirmarlo un médico.")
 
 
-def _llamar_modelo(modelo: str, prompt: str, timeout_ms: int) -> str:
+def _llamar_modelo(modelo: str, prompt: str, timeout_ms: int, instrucciones: str = INSTRUCCIONES_SISTEMA) -> str:
     """Llama a un modelo de Gemini sin razonamiento, probando la forma de desactivarlo que acepte."""
     from google.genai import errors, types
     inicio = _opcion_por_modelo.get(modelo, 0)
     for indice in range(inicio, len(_OPCIONES_RAZONAMIENTO)):
         opcion = _OPCIONES_RAZONAMIENTO[indice]
         config = types.GenerateContentConfig(
-            system_instruction=INSTRUCCIONES_SISTEMA, temperature=0.7, max_output_tokens=1024,
+            system_instruction=instrucciones, temperature=0.7, max_output_tokens=1024,
             thinking_config=types.ThinkingConfig(**opcion) if opcion else None,
             http_options=types.HttpOptions(timeout=timeout_ms),
         )
@@ -162,18 +162,18 @@ def _llamar_modelo(modelo: str, prompt: str, timeout_ms: int) -> str:
     return ""
 
 
-def _llamar_llm(prompt: str) -> tuple:
+def _llamar_llm(prompt: str, instrucciones: str = INSTRUCCIONES_SISTEMA) -> tuple:
     """Intenta con el modelo principal; si tarda demasiado (504), falla el servidor (5xx) o se agota
     la cuota (429), hace un segundo intento con Flash-Lite. Devuelve (texto, modelo que respondió)."""
     from google.genai import errors
     try:
-        return _llamar_modelo(MODELO_LLM, prompt, TIMEOUT_PRINCIPAL_MS), MODELO_LLM
+        return _llamar_modelo(MODELO_LLM, prompt, TIMEOUT_PRINCIPAL_MS, instrucciones), MODELO_LLM
     except (errors.ServerError, errors.ClientError) as exc:
         reintentable = isinstance(exc, errors.ServerError) or exc.code == 429
         if not (reintentable and MODELO_LIGERO):
             raise
         print(f"{MODELO_LLM} falló ({exc.code} {exc.status}); segundo intento con {MODELO_LIGERO}")
-        return _llamar_modelo(MODELO_LIGERO, prompt, TIMEOUT_LIGERO_MS), MODELO_LIGERO
+        return _llamar_modelo(MODELO_LIGERO, prompt, TIMEOUT_LIGERO_MS, instrucciones), MODELO_LIGERO
 
 
 def _limpiar(texto: str) -> str:

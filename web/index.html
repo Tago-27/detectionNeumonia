@@ -92,6 +92,29 @@
   .etiqueta-estrellas { font-size: .9rem; color: var(--tenue); min-width: 9ch; }
   .gracias { font-size: .92rem; color: var(--normal); font-weight: 700; flex-basis: 100%; }
 
+  /* ---------- Asistente de preguntas ---------- */
+  .asistente { border-top: 1px solid var(--linea); margin-top: 1.5rem; padding-top: 1.25rem; }
+  .asistente h2 { font-size: 1.1rem; margin: 0 0 .25rem; }
+  .sugeridas { display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0; }
+  .sugeridas button {
+    font-weight: 400; font-size: .92rem; padding: .4rem .75rem; border-radius: 999px;
+    background: var(--fondo); color: var(--tinta);
+  }
+  .sugeridas button:hover:not(:disabled) { background: var(--linea); }
+  .sugeridas button:disabled, .form-pregunta button:disabled { opacity: .55; cursor: not-allowed; }
+  .form-pregunta { display: flex; gap: .5rem; }
+  .form-pregunta input {
+    flex: 1; min-width: 0; font: inherit; font-size: .98rem; padding: .6rem .8rem;
+    border: 2px solid var(--linea); border-radius: 10px; color: var(--tinta); background: #fff;
+  }
+  .form-pregunta input:focus-visible { outline: 3px solid #4C8DB5; outline-offset: 1px; border-color: transparent; }
+  .form-pregunta button { padding: .6rem 1rem; }
+  .conversacion { display: flex; flex-direction: column; gap: .9rem; margin-top: 1rem; }
+  .turno .q { font-weight: 700; margin: 0 0 .25rem; }
+  .turno .a { margin: 0; padding: .7rem .9rem; background: var(--fondo); border-radius: 10px; }
+  .turno .meta { margin: .3rem 0 0; }
+  .turno.pensando .a { color: var(--tenue); font-style: italic; }
+
   /* ---------- Gráfica del aprendizaje del agente ---------- */
   .aprendizaje { background: #fff; border-radius: 14px; padding: 1.75rem; border: 1px solid var(--linea); margin-top: 1.5rem; }
   .aprendizaje h2 { font-size: 1.25rem; margin: 0 0 .25rem; }
@@ -154,6 +177,18 @@
             <span class="etiqueta-estrellas" id="etiquetaEstrellas"></span>
             <span class="gracias" id="gracias" role="status"></span>
           </div>
+        </div>
+
+        <div class="asistente">
+          <h2>Pregúntale al asistente</h2>
+          <p class="meta">Responde con tu resultado como contexto. Es información general: no reemplaza a un médico.</p>
+          <div class="sugeridas" id="sugeridas"></div>
+          <form class="form-pregunta" id="formPregunta">
+            <input id="textoPregunta" type="text" maxlength="300" autocomplete="off"
+                   placeholder="O escribe tu propia pregunta…" aria-label="Escribe tu pregunta">
+            <button class="primario" id="enviarPregunta" type="submit">Preguntar</button>
+          </form>
+          <div class="conversacion" id="conversacion" aria-live="polite"></div>
         </div>
       </div>
     </section>
@@ -253,6 +288,8 @@
       : `Texto de respaldo (${r.motivo_respaldo || "el LLM no estaba disponible"}) · estilo "${r.estilo}"`;
     document.getElementById("avisoRecomendacion").textContent = r.aviso;
     ultimoRL = r.rl;
+    ultimoResultado = { diagnostico: r.diagnostico, prob_neumonia: r.prob_neumonia };
+    document.getElementById("conversacion").innerHTML = "";   // conversación nueva para cada radiografía
     activarFeedback(true);
     document.getElementById("gracias").textContent = "";
     salida.classList.remove("oculto");
@@ -306,7 +343,68 @@
     }
   }
 
-  // ---------- 5. Gráfica del aprendizaje (Chart.js) ----------
+  // ---------- 5. Asistente de preguntas (LLM con el resultado como contexto) ----------
+  let ultimoResultado = null;
+  const conversacion = document.getElementById("conversacion");
+  const textoPregunta = document.getElementById("textoPregunta");
+  const PREGUNTAS_POR_DEFECTO = ["¿Qué es la neumonía?", "¿Cuándo debo ir a urgencias?",
+    "¿Cómo se contagia y cómo evitarlo?", "¿Qué debo hacer ahora con este resultado?",
+    "¿Qué tan confiable es este resultado?"];
+
+  function pintarSugeridas(lista) {
+    const cont = document.getElementById("sugeridas");
+    cont.innerHTML = "";
+    lista.forEach(texto => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = texto;
+      b.addEventListener("click", () => preguntar(texto));
+      cont.appendChild(b);
+    });
+  }
+  fetch(`${API}/asistente/preguntas`).then(r => r.ok ? r.json() : Promise.reject())
+    .then(j => pintarSugeridas(j.preguntas)).catch(() => pintarSugeridas(PREGUNTAS_POR_DEFECTO));
+
+  function bloquearAsistente(bloqueado) {
+    document.querySelectorAll("#sugeridas button, #enviarPregunta").forEach(b => b.disabled = bloqueado);
+  }
+
+  async function preguntar(pregunta) {
+    pregunta = (pregunta || "").trim();
+    if (!ultimoResultado || pregunta.length < 3) return;
+    const turno = document.createElement("div");
+    turno.className = "turno pensando";
+    const q = document.createElement("p"); q.className = "q"; q.textContent = pregunta;
+    const a = document.createElement("p"); a.className = "a"; a.textContent = "Pensando la respuesta…";
+    const meta = document.createElement("p"); meta.className = "meta";
+    turno.append(q, a, meta);
+    conversacion.prepend(turno);                    // la respuesta más reciente arriba
+    bloquearAsistente(true);
+    try {
+      const resp = await fetch(`${API}/asistente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...ultimoResultado, pregunta }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(Array.isArray(json.detail) ? "pregunta no válida" : (json.detail || `Error ${resp.status}`));
+      a.textContent = json.respuesta;
+      meta.textContent = json.generado_por_llm
+        ? `Generada por ${json.modelo_llm}`
+        : `Respuesta de respaldo (${json.motivo_respaldo || "el LLM no estaba disponible"})`;
+      textoPregunta.value = "";
+    } catch (err) {
+      a.textContent = `No se pudo obtener la respuesta: ${err.message}.`;
+    } finally {
+      turno.classList.remove("pensando");
+      bloquearAsistente(false);
+    }
+  }
+  document.getElementById("formPregunta").addEventListener("submit", e => {
+    e.preventDefault();
+    preguntar(textoPregunta.value);
+  });
+
+  // ---------- 6. Gráfica del aprendizaje (Chart.js) ----------
   let grafica = null;
   async function cargarHistorial() {
     const aviso = document.getElementById("estadoGrafica");

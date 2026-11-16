@@ -14,3 +14,5 @@ services:
         sync: false
       - key: MODELO_LLM             # Flash-Lite responde en segundos; si dejara de existir, la API elige otro solo
         value: gemini-3.5-flash-lite
+      - key: UMBRAL_CLIP            # filtro "¿es una radiografía?": si rechaza radiografías reales, bajar a 0.3
+        value: "0.5"

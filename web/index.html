@@ -298,6 +298,10 @@
     try {
       const resp = await fetch(`${API}/predecir`, { method: "POST", body: datos });
       const json = await resp.json();
+      if (resp.status === 422 && typeof json.detail === "string") {   // el filtro CLIP rechazó la imagen
+        mostrarError(`${json.detail}. Sube una radiografía frontal de tórax (JPG o PNG).`);
+        return;
+      }
       if (!resp.ok) throw new Error(json.detail || `Error ${resp.status}`);
       mostrarResultado(json);
     } catch (err) {
@@ -683,6 +687,7 @@
   cargarHistorial();
   function mostrarError(msg) {
     salida.classList.add("oculto");
+    panelGradcam.classList.add("oculto");
     estado.className = "estado error";
     estado.textContent = msg;
   }

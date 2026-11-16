@@ -8,5 +8,7 @@ opencv-python-headless==5.0.0.93
 numpy==2.5.3
 google-genai==3.0.0            # LLM: API de Gemini
 psycopg[binary]==3.3.8         # tabla Q del agente RL en Postgres
+onnxruntime==1.32.0            # filtro CLIP "¿es una radiografía?" (modelo/clip_vision_int8.onnx)
 # Para reconvertir el modelo (herramientas/convertir_a_tflite.py) hace falta además, solo en local:
 #   tensorflow==2.20.0 keras==3.15.1
+# Para regenerar el filtro CLIP (herramientas/exportar_clip.py), solo en local: torch transformers onnx

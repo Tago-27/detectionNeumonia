@@ -1,7 +1,8 @@
 """
 API de detección de neumonía + recomendación generada con LLM + aprendizaje por refuerzo con el feedback del usuario.
 
-Pipeline:  imagen --POST /predecir--> preprocesamiento --> CNN (predicción + Grad-CAM)
+Pipeline:  imagen --POST /predecir--> filtro CLIP (¿es radiografía? si no, 422) --> preprocesamiento
+           --> CNN (predicción + Grad-CAM)
            --> agente RL elige el estilo --> LLM genera la recomendación con la predicción como input --> JSON
            usuario: 1 a 5 estrellas --POST /rl/feedback--> agente RL actualiza su tabla Q
            GET /rl/historial --> recompensas y promedio móvil (gráfica de la web)
@@ -41,6 +42,7 @@ from pydantic import BaseModel, Field
 
 import asistente
 from agente_rl import AgenteRecomendaciones, AlmacenArchivo, AlmacenPostgres
+import filtro_clip
 import gradcam
 from preprocesamiento import bytes_a_gris, construir_filtro, gris_a_tensor
 import recomendaciones_llm
@@ -107,6 +109,20 @@ UMBRAL = float(CONFIG["umbral"])
 TAMANO_MAXIMO = 10 * 1024 * 1024   # 10 MB
 METRICAS = asistente.metricas_desde_config(CONFIG)   # confiabilidad del modelo, para el asistente
 
+# Filtro CLIP "¿es una radiografía?". Si no carga (o USAR_CLIP=0), se dejan pasar todas las imágenes.
+UMBRAL_CLIP = float(os.getenv("UMBRAL_CLIP", "0.5"))
+FILTRO_CLIP = None
+if os.getenv("USAR_CLIP", "1") == "1":
+    log_arranque("cargando el filtro CLIP (ONNX int8)...")
+    try:
+        FILTRO_CLIP = filtro_clip.FiltroCLIP(CARPETA_MODELO / "clip_vision_int8.onnx",
+                                             CARPETA_MODELO / "clip_textos.npz", UMBRAL_CLIP)
+        log_arranque(f"filtro CLIP listo (umbral {UMBRAL_CLIP})")
+    except Exception as err:
+        log_arranque(f"filtro CLIP NO disponible, se aceptarán todas las imágenes: {type(err).__name__}: {err}")
+else:
+    log_arranque("filtro CLIP desactivado (USAR_CLIP=0)")
+
 log_arranque("conectando con Gemini...")
 cargar_llm()
 # En Render gratis los archivos se borran al apagar el servicio: con DATABASE_URL la tabla Q va a Postgres.
@@ -147,6 +163,7 @@ def salud():
             "llm_cargado": llm_cargado(), "modelo_llm": recomendaciones_llm.MODELO_LLM,
             "modelo_llm_segundo_intento": recomendaciones_llm.MODELO_LIGERO,
             "gradcam": CABEZA_GRADCAM is not None,
+            "filtro_clip": FILTRO_CLIP is not None, "umbral_clip": UMBRAL_CLIP,
             "tabla_q": AGENTE.almacen.descripcion,
             "feedback_recibido": AGENTE.total_feedback}
 
@@ -164,6 +181,17 @@ def predecir(imagen: UploadFile = File(...)):
         x = gris_a_tensor(gris, FILTRO)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # 0) Filtro CLIP: si la imagen no parece una radiografía de tórax, no se analiza (422).
+    revision_clip = None
+    if FILTRO_CLIP is not None:
+        try:
+            revision_clip = FILTRO_CLIP.evaluar(contenido)
+        except Exception as err:   # si CLIP falla, la imagen pasa
+            print(f"Filtro CLIP falló, se deja pasar la imagen: {type(err).__name__}: {err}")
+        if revision_clip and not revision_clip["es_radiografia"]:
+            print(f"Imagen rechazada por CLIP: P(radiografía)={revision_clip['prob_radiografia']}")
+            raise HTTPException(status_code=422, detail=filtro_clip.MENSAJE_RECHAZO)
 
     prob, activaciones = MODELO.predecir(x)          # [P(NORMAL), P(PNEUMONIA)], ya es softmax
     prob_normal, prob_neumonia = float(prob[0]), float(prob[1])
@@ -191,6 +219,7 @@ def predecir(imagen: UploadFile = File(...)):
         **recomendacion,
         "rl": rl,
         "gradcam": mapa,   # PNG en base64 (gradcam_png = mezcla con 40 % de mapa) o None
+        "filtro_clip": revision_clip,   # probabilidades de CLIP, o None si el filtro no está activo
     }
 
 

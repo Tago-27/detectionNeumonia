@@ -106,6 +106,10 @@
   .escala-jet { flex: 1; height: 10px; border-radius: 5px;
     background: linear-gradient(90deg, #00008F, #0000FF, #00FFFF, #FFFF00, #FF0000, #800000); }
 
+  /* ---------- Informe PDF ---------- */
+  .informe { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; border-top: 1px solid var(--linea); margin-top: 1.5rem; padding-top: 1.25rem; }
+  .informe button:disabled { opacity: .55; cursor: wait; }
+
   /* ---------- Asistente de preguntas ---------- */
   .asistente { border-top: 1px solid var(--linea); margin-top: 1.5rem; padding-top: 1.25rem; }
   .asistente h2 { font-size: 1.1rem; margin: 0 0 .25rem; }
@@ -208,6 +212,11 @@
           </div>
         </div>
 
+        <div class="informe">
+          <button class="secundario" id="descargarPdf" type="button">Descargar informe (PDF)</button>
+          <span class="meta" id="estadoPdf" role="status"></span>
+        </div>
+
         <div class="asistente">
           <h2>Pregúntale al asistente</h2>
           <p class="meta">Responde con tu resultado como contexto. Es información general: no reemplaza a un médico.</p>
@@ -238,6 +247,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   // ---------- Referencias a los elementos de la página ----------
   const API = "";   // vacío = mismo servidor que entrega esta página (FastAPI)
@@ -312,6 +322,8 @@
     document.getElementById("notaUmbral").textContent =
       `La línea marca el umbral (${porcentaje(r.umbral)}), elegido en validación: por encima se diagnostica PNEUMONIA.`;
 
+    ultimaRespuesta = r;
+    document.getElementById("estadoPdf").textContent = "";
     mostrarGradcam(r.gradcam);
     document.getElementById("recomendacion").textContent = r.recomendacion;
     document.getElementById("metaRecomendacion").textContent = r.generado_por_llm
@@ -453,7 +465,161 @@
     preguntar(textoPregunta.value);
   });
 
-  // ---------- 6. Gráfica del aprendizaje (Chart.js) ----------
+  // ---------- 6. Informe PDF (jsPDF, se genera en el navegador) ----------
+  let ultimaRespuesta = null;   // JSON completo de /predecir
+  const AVISO_PDF = "Resultado experimental, no es un diagnóstico médico.";
+
+  // Las fuentes estándar de jsPDF solo tienen caracteres latinos (Windows-1252): se reemplaza lo demás.
+  function textoPdf(t) {
+    return String(t || "").replace(/[≥]/g, ">=").replace(/[≤]/g, "<=").replace(/[‐‑‒]/g, "-")
+      .replace(/[^\x00-\xFF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]/g, "");
+  }
+
+  function cargarImagen(src) {
+    return new Promise((ok, mal) => {
+      const img = new Image();
+      img.onload = () => ok(img);
+      img.onerror = () => mal(new Error("no se pudo leer la imagen"));
+      img.src = src;
+    });
+  }
+
+  // Radiografía original como JPEG (máx. 1000 px, para que el PDF no pese demasiado).
+  async function radiografiaJpeg() {
+    const img = await cargarImagen(vista.src);
+    const escala = Math.min(1, 1000 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.naturalWidth * escala); c.height = Math.round(img.naturalHeight * escala);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return { datos: c.toDataURL("image/jpeg", 0.9), ancho: c.width, alto: c.height };
+  }
+
+  // Grad-CAM con la misma opacidad que el usuario dejó en el deslizador.
+  async function gradcamPng(g) {
+    const [base, mapa] = await Promise.all([cargarImagen(`data:image/png;base64,${g.radiografia_png}`),
+                                           cargarImagen(`data:image/png;base64,${g.mapa_calor_png}`)]);
+    const c = document.createElement("canvas");
+    c.width = c.height = 448;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(base, 0, 0, 448, 448);
+    ctx.globalAlpha = opacidad.value / 100;
+    ctx.drawImage(mapa, 0, 0, 448, 448);
+    return c.toDataURL("image/png");
+  }
+
+  async function descargarPdf() {
+    const estadoPdf = document.getElementById("estadoPdf");
+    const boton = document.getElementById("descargarPdf");
+    if (!ultimaRespuesta) return;
+    if (!window.jspdf) { estadoPdf.textContent = "No se pudo cargar la librería del PDF (revisa la conexión)."; return; }
+    boton.disabled = true;
+    estadoPdf.textContent = "Generando el informe…";
+    try {
+      const r = ultimaRespuesta;
+      const doc = new window.jspdf.jsPDF({ unit: "mm", format: "a4" });
+      const A4 = { ancho: 210, alto: 297 }, M = 18, util = 210 - 2 * M;
+      const ahora = new Date();
+      const color = { tinta: [22, 50, 74], tenue: [91, 107, 120], linea: [201, 213, 221],
+                      NORMAL: [31, 122, 108], PNEUMONIA: [180, 97, 28] };
+      let y = M;
+
+      function piePagina() {
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...color.tenue);
+        doc.text(textoPdf(`${AVISO_PDF} Proyecto académico Detection-Neumonia.`), M, A4.alto - 10);
+        doc.text(`Página ${doc.getCurrentPageInfo().pageNumber}`, A4.ancho - M, A4.alto - 10, { align: "right" });
+      }
+      function asegurarEspacio(alto) {
+        if (y + alto > A4.alto - 20) { piePagina(); doc.addPage(); y = M; }
+      }
+
+      // --- Título y fecha
+      doc.setTextColor(...color.tinta);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(19);
+      doc.text(textoPdf("Informe de análisis de radiografía de tórax"), M, y + 6); y += 12;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...color.tenue);
+      doc.text(textoPdf(`Fecha: ${ahora.toLocaleString("es-CO", { dateStyle: "long", timeStyle: "short" })}` +
+                        (imagenElegida ? `   ·   Archivo: ${imagenElegida.name}` : "")), M, y); y += 4;
+      doc.setDrawColor(...color.linea); doc.line(M, y, A4.ancho - M, y); y += 8;
+
+      // --- Imágenes: radiografía original y Grad-CAM, lado a lado
+      const lado = (util - 8) / 2;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...color.tinta);
+      doc.text(textoPdf("Radiografía"), M, y);
+      if (r.gradcam) doc.text(textoPdf("Mapa Grad-CAM (dónde miró la red)"), M + lado + 8, y);
+      y += 3;
+      doc.setFillColor(26, 35, 41);
+      doc.rect(M, y, lado, lado, "F");
+      const rx = await radiografiaJpeg();
+      const k = Math.min(lado / rx.ancho, lado / rx.alto);
+      const w = rx.ancho * k, h = rx.alto * k;
+      doc.addImage(rx.datos, "JPEG", M + (lado - w) / 2, y + (lado - h) / 2, w, h);
+      if (r.gradcam) doc.addImage(await gradcamPng(r.gradcam), "PNG", M + lado + 8, y, lado, lado);
+      y += lado + 4;
+      if (r.gradcam) {
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...color.tenue);
+        doc.text(textoPdf(`Rojo = mayor influencia en la decisión; azul = menor. Opacidad del mapa: ${opacidad.value} %.`),
+                 M + lado + 8, y, { maxWidth: lado });
+      }
+      y += 10;
+
+      // --- Diagnóstico y porcentajes
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...color.tenue);
+      doc.text(textoPdf("Resultado del modelo"), M, y); y += 9;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(24); doc.setTextColor(...color[r.diagnostico]);
+      doc.text(r.diagnostico, M, y); y += 9;
+      [["P(NORMAL)", r.prob_normal, color.NORMAL], ["P(PNEUMONIA)", r.prob_neumonia, color.PNEUMONIA]].forEach(([nombre, p, c]) => {
+        doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...color.tinta);
+        doc.text(nombre, M, y);
+        doc.text(porcentaje(p), A4.ancho - M, y, { align: "right" });
+        y += 2.5;
+        doc.setFillColor(237, 241, 244); doc.roundedRect(M, y, util, 4, 2, 2, "F");
+        if (p > 0.005) { doc.setFillColor(...c); doc.roundedRect(M, y, util * p, 4, 2, 2, "F"); }
+        y += 10;
+      });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(...color.tenue);
+      doc.text(textoPdf(`Umbral de decisión: ${porcentaje(r.umbral)} (por encima se clasifica como PNEUMONIA).`), M, y - 3);
+      y += 6;
+
+      // --- Recomendación
+      asegurarEspacio(20);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...color.tinta);
+      doc.text(textoPdf("Recomendación"), M, y); y += 6;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10.5);
+      doc.splitTextToSize(textoPdf(r.recomendacion), util).forEach(linea => {
+        asegurarEspacio(6); doc.text(linea, M, y); y += 5.2;
+      });
+      y += 1;
+      doc.setFontSize(8.5); doc.setTextColor(...color.tenue);
+      const origen = r.generado_por_llm ? `Generada por el modelo de lenguaje ${r.modelo_llm}, estilo "${r.estilo}".`
+                                        : `Texto de respaldo, estilo "${r.estilo}".`;
+      asegurarEspacio(6); doc.text(textoPdf(origen), M, y); y += 9;
+
+      // --- Aviso destacado
+      const textoAviso = (r.aviso || "").startsWith(AVISO_PDF) ? r.aviso : `${AVISO_PDF} ${r.aviso || ""}`.trim();
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10);   // antes de cortar las líneas: la negrita es más ancha
+      const aviso = doc.splitTextToSize(textoPdf(textoAviso), util - 10);
+      const altoAviso = 6 + aviso.length * 4.8;
+      asegurarEspacio(altoAviso);
+      doc.setFillColor(251, 241, 231); doc.setDrawColor(...color.PNEUMONIA);
+      doc.roundedRect(M, y, util, altoAviso, 2, 2, "FD");
+      doc.setTextColor(...color.tinta);
+      doc.text(aviso, M + 5, y + 6.5, { lineHeightFactor: 1.35 });
+
+      piePagina();
+      const marca = ahora.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "_");
+      doc.save(`informe_neumonia_${marca}.pdf`);
+      estadoPdf.textContent = "Informe descargado.";
+    } catch (err) {
+      estadoPdf.textContent = `No se pudo generar el PDF: ${err.message}`;
+    } finally {
+      boton.disabled = false;
+    }
+  }
+  document.getElementById("descargarPdf").addEventListener("click", descargarPdf);
+
+  // ---------- 7. Gráfica del aprendizaje (Chart.js) ----------
   let grafica = null;
   async function cargarHistorial() {
     const aviso = document.getElementById("estadoGrafica");

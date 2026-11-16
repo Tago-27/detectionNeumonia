@@ -3,7 +3,9 @@ Agente de aprendizaje por refuerzo (Q-learning) que aprende qué estilo de recom
 
 - ESTADO: diagnóstico + nivel de confianza (por ejemplo "PNEUMONIA|alta").
 - ACCIÓN: el estilo de la recomendación que genera el LLM.
-- RECOMPENSA: el feedback del usuario (+1 me gusta, -1 no me gusta, o un valor intermedio).
+- RECOMPENSA: la calificación del usuario con estrellas (1 = -1, 2 = -0,5, 3 = 0, 4 = +0,5, 5 = +1).
+
+Además de la tabla Q se guarda el historial de calificaciones, para ver si la recompensa media mejora.
 
 La tabla Q se guarda para no perder lo aprendido al reiniciar la API:
 - con DATABASE_URL (Render): en Postgres, porque Render gratis borra los archivos al apagar el servicio;
@@ -12,13 +14,18 @@ La tabla Q se guarda para no perder lo aprendido al reiniciar la API:
 import json
 import random
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from recomendaciones_llm import ESTILOS
 
 DIAGNOSTICOS = ["NORMAL", "PNEUMONIA"]
 NIVELES = ["alta", "media", "baja"]
+# Calificación con estrellas -> recompensa del agente.
+RECOMPENSA_ESTRELLAS = {1: -1.0, 2: -0.5, 3: 0.0, 4: 0.5, 5: 1.0}
+MAX_HISTORIAL = 500        # se guardan solo las últimas calificaciones para que la fila no crezca sin límite
+VENTANA_PROMEDIO = 10      # promedio móvil de las últimas 10 recompensas
 
 
 def nivel_confianza(prob_clase: float) -> str:
@@ -89,6 +96,7 @@ class AgenteRecomendaciones:
         self.epsilon, self.epsilon_min, self.decaimiento = epsilon, epsilon_min, decaimiento
         self.acciones = list(ESTILOS)
         self.total_feedback = 0
+        self.historial: List[dict] = []   # una entrada por calificación (fecha, estado, acción, estrellas, recompensa)
         self.q_table: Dict[str, Dict[str, float]] = {f"{d}|{n}": {a: 0.0 for a in self.acciones}
                                                      for d in DIAGNOSTICOS for n in NIVELES}
         self._candado = threading.Lock()   # FastAPI atiende peticiones en varios hilos
@@ -99,9 +107,12 @@ class AgenteRecomendaciones:
                 self.q_table.setdefault(estado, {}).update({a: float(v) for a, v in valores.items() if a in self.acciones})
             self.total_feedback = int(datos.get("total_feedback", 0))
             self.epsilon = float(datos.get("epsilon", self.epsilon))
+            # Las tablas guardadas antes de existir el historial no tienen esta clave: se empieza vacío.
+            self.historial = list(datos.get("historial", []))[-MAX_HISTORIAL:]
 
     def _datos(self) -> dict:
-        return {"q_table": self.q_table, "total_feedback": self.total_feedback, "epsilon": self.epsilon}
+        return {"q_table": self.q_table, "total_feedback": self.total_feedback, "epsilon": self.epsilon,
+                "historial": self.historial}
 
     def estado(self, diagnostico: str, prob_clase: float) -> str:
         return f"{diagnostico}|{nivel_confianza(prob_clase)}"
@@ -118,24 +129,37 @@ class AgenteRecomendaciones:
             return {"estado": estado, "accion": accion, "modo": modo, "epsilon": round(self.epsilon, 4),
                     "valores_q": dict(self.q_table[estado])}
 
-    def registrar_feedback(self, estado: str, accion: str, recompensa: float) -> Dict[str, object]:
+    def registrar_feedback(self, estado: str, accion: str, recompensa: Optional[float] = None,
+                           estrellas: Optional[int] = None) -> Dict[str, object]:
         if estado not in self.q_table or accion not in self.acciones:
             raise ValueError("Estado o acción no válidos.")
+        if estrellas is not None:
+            if estrellas not in RECOMPENSA_ESTRELLAS:
+                raise ValueError("Las estrellas deben ser un número entero de 1 a 5.")
+            recompensa = RECOMPENSA_ESTRELLAS[estrellas]
+        elif recompensa is None:
+            raise ValueError("Envía 'estrellas' (1 a 5) o 'recompensa' (-1 a 1).")
         recompensa = max(-1.0, min(1.0, float(recompensa)))
         with self._candado:
             anterior, epsilon_anterior = self.q_table[estado][accion], self.epsilon
+            historial_anterior = self.historial
             objetivo = recompensa + self.gamma * max(self.q_table[estado].values())   # con gamma = 0: solo la recompensa
             self.q_table[estado][accion] = anterior + self.alfa * (objetivo - anterior)   # ecuación de Q-learning
             self.total_feedback += 1
             self.epsilon = max(self.epsilon_min, self.epsilon * self.decaimiento)
+            self.historial = (historial_anterior + [{
+                "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "estado": estado, "accion": accion, "estrellas": estrellas, "recompensa": recompensa,
+            }])[-MAX_HISTORIAL:]
             try:
                 self.almacen.guardar(self._datos())
             except Exception:
                 # Si no se pudo guardar, se deshace en memoria para que memoria y almacén no diverjan.
                 self.q_table[estado][accion], self.epsilon = anterior, epsilon_anterior
+                self.historial = historial_anterior
                 self.total_feedback -= 1
                 raise
-            return {"estado": estado, "accion": accion, "recompensa": recompensa,
+            return {"estado": estado, "accion": accion, "estrellas": estrellas, "recompensa": recompensa,
                     "q_anterior": round(anterior, 4), "q_nuevo": round(self.q_table[estado][accion], 4),
                     "total_feedback": self.total_feedback, "epsilon": round(self.epsilon, 4)}
 
@@ -144,3 +168,14 @@ class AgenteRecomendaciones:
             return {"total_feedback": self.total_feedback, "epsilon": round(self.epsilon, 4), "alfa": self.alfa,
                     "almacenamiento": self.almacen.descripcion,
                     "q_table": {e: dict(v) for e, v in self.q_table.items()}}
+
+    def historial_con_promedio(self) -> Dict[str, object]:
+        """Cada calificación con el promedio móvil de las últimas VENTANA_PROMEDIO recompensas."""
+        with self._candado:
+            historial = list(self.historial)
+        puntos = []
+        for i, entrada in enumerate(historial):
+            ventana = [h["recompensa"] for h in historial[max(0, i - VENTANA_PROMEDIO + 1):i + 1]]
+            puntos.append({**entrada, "numero": i + 1, "promedio_movil": round(sum(ventana) / len(ventana), 4)})
+        return {"ventana": VENTANA_PROMEDIO, "total": len(puntos),
+                "promedio_actual": puntos[-1]["promedio_movil"] if puntos else None, "puntos": puntos}

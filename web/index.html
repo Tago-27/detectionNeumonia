@@ -17,6 +17,7 @@
     --normal: #1F7A6C;       /* color de NORMAL */
     --neumonia: #B4611C;     /* color de PNEUMONIA */
     --linea: #C9D5DD;
+    --estrella: #D99A1E;     /* estrellas encendidas */
     --tipo: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -80,12 +81,28 @@
   .recomendacion p { margin: 0 0 .75rem; }
   .meta { font-size: .88rem; color: var(--tenue); }
   .feedback { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .5rem; }
-  .feedback button { padding: .55rem 1rem; }
-  .feedback button:disabled { opacity: .55; cursor: not-allowed; }
-  .gracias { font-size: .92rem; color: var(--normal); font-weight: 700; }
+  .estrellas { display: flex; gap: .15rem; }
+  .estrellas button {
+    background: none; padding: .1rem .2rem; font-size: 1.9rem; line-height: 1; color: var(--linea);
+    transition: color .15s ease, transform .15s ease;
+  }
+  .estrellas button.encendida { color: var(--estrella); }
+  .estrellas button:not(:disabled):hover { transform: scale(1.12); }
+  .estrellas button:disabled { cursor: not-allowed; }
+  .etiqueta-estrellas { font-size: .9rem; color: var(--tenue); min-width: 9ch; }
+  .gracias { font-size: .92rem; color: var(--normal); font-weight: 700; flex-basis: 100%; }
+
+  /* ---------- Gráfica del aprendizaje del agente ---------- */
+  .aprendizaje { background: #fff; border-radius: 14px; padding: 1.75rem; border: 1px solid var(--linea); margin-top: 1.5rem; }
+  .aprendizaje h2 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  .aprendizaje .meta { margin: 0 0 1rem; }
+  .lienzo-grafica { position: relative; height: 260px; }
+  .cifras { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .cifra strong { display: block; font-size: 1.6rem; line-height: 1.1; }
+  .cifra span { font-size: .88rem; color: var(--tenue); }
 
   .advertencia { margin-top: 2rem; font-size: .92rem; color: var(--tenue); max-width: 70ch; }
-  @media (prefers-reduced-motion: reduce) { .relleno { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .relleno, .estrellas button { transition: none; } }
 </style>
 </head>
 <body>
@@ -126,9 +143,15 @@
           <p class="meta" id="metaRecomendacion"></p>
           <p class="meta" id="avisoRecomendacion"></p>
           <div class="feedback">
-            <span>¿Te resultó útil?</span>
-            <button class="secundario" id="meGusta" type="button">👍 Me gusta</button>
-            <button class="secundario" id="noMeGusta" type="button">👎 No me gusta</button>
+            <span>¿Qué tan útil te resultó?</span>
+            <div class="estrellas" id="estrellas" role="group" aria-label="Calificar de 1 a 5 estrellas">
+              <button type="button" data-valor="1" aria-label="1 estrella: nada útil">★</button>
+              <button type="button" data-valor="2" aria-label="2 estrellas: poco útil">★</button>
+              <button type="button" data-valor="3" aria-label="3 estrellas: regular">★</button>
+              <button type="button" data-valor="4" aria-label="4 estrellas: útil">★</button>
+              <button type="button" data-valor="5" aria-label="5 estrellas: muy útil">★</button>
+            </div>
+            <span class="etiqueta-estrellas" id="etiquetaEstrellas"></span>
             <span class="gracias" id="gracias" role="status"></span>
           </div>
         </div>
@@ -136,9 +159,21 @@
     </section>
   </div>
 
+  <section class="aprendizaje" aria-labelledby="tituloAprendizaje">
+    <h2 id="tituloAprendizaje">Aprendizaje del agente</h2>
+    <p class="meta">Recompensa de cada calificación (1★ = −1, 3★ = 0, 5★ = +1) y su promedio móvil de las últimas 10. Si el agente aprende el estilo que prefieren los usuarios, el promedio debería subir.</p>
+    <div class="cifras">
+      <div class="cifra"><strong id="cifraTotal">–</strong><span>calificaciones</span></div>
+      <div class="cifra"><strong id="cifraPromedio">–</strong><span>promedio de las últimas 10</span></div>
+    </div>
+    <div class="lienzo-grafica"><canvas id="grafica" aria-label="Gráfica de la recompensa promedio del agente" role="img"></canvas></div>
+    <p class="meta" id="estadoGrafica"></p>
+  </section>
+
   <p class="advertencia">Proyecto académico. El resultado no es un diagnóstico médico y no reemplaza la valoración de un profesional de la salud.</p>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
   // ---------- Referencias a los elementos de la página ----------
   const API = "";   // vacío = mismo servidor que entrega esta página (FastAPI)
@@ -223,32 +258,116 @@
     salida.classList.remove("oculto");
   }
 
-  // ---------- 4. Feedback del usuario → aprendizaje por refuerzo ----------
+  // ---------- 4. Calificación con estrellas → aprendizaje por refuerzo ----------
   let ultimoRL = null;   // estado y acción que devolvió /predecir
-  const botonesFeedback = [document.getElementById("meGusta"), document.getElementById("noMeGusta")];
-  function activarFeedback(activo) { botonesFeedback.forEach(b => b.disabled = !activo); }
+  const botonesEstrella = [...document.querySelectorAll("#estrellas button")];
+  const etiquetaEstrellas = document.getElementById("etiquetaEstrellas");
+  const TEXTO_ESTRELLAS = ["", "Nada útil", "Poco útil", "Regular", "Útil", "Muy útil"];
+  let estrellasElegidas = 0;
 
-  async function calificar(recompensa) {   // +1 me gusta, -1 no me gusta
+  function pintarEstrellas(n) {
+    botonesEstrella.forEach((b, i) => b.classList.toggle("encendida", i < n));
+    etiquetaEstrellas.textContent = TEXTO_ESTRELLAS[n] || "";
+  }
+  function activarFeedback(activo) {
+    botonesEstrella.forEach(b => b.disabled = !activo);
+    if (activo) { estrellasElegidas = 0; pintarEstrellas(0); }
+  }
+  botonesEstrella.forEach(b => {
+    const n = Number(b.dataset.valor);
+    b.addEventListener("mouseenter", () => { if (!b.disabled) pintarEstrellas(n); });
+    b.addEventListener("focus", () => { if (!b.disabled) pintarEstrellas(n); });
+    b.addEventListener("mouseleave", () => pintarEstrellas(estrellasElegidas));
+    b.addEventListener("blur", () => pintarEstrellas(estrellasElegidas));
+    b.addEventListener("click", () => calificar(n));
+  });
+
+  async function calificar(estrellas) {
     if (!ultimoRL) return;
-    activarFeedback(false);                // una calificación por recomendación
+    estrellasElegidas = estrellas;
+    pintarEstrellas(estrellas);
+    botonesEstrella.forEach(b => b.disabled = true);   // una calificación por recomendación
     const gracias = document.getElementById("gracias");
     try {
       const resp = await fetch(`${API}/rl/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado: ultimoRL.estado, accion: ultimoRL.accion, recompensa }),
+        body: JSON.stringify({ estado: ultimoRL.estado, accion: ultimoRL.accion, estrellas }),
       });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.detail || `Error ${resp.status}`);
-      gracias.textContent = "¡Gracias! El agente aprendió de tu calificación.";
+      const r = json.datos.recompensa;
+      gracias.textContent = `¡Gracias! Recompensa ${r > 0 ? "+" : ""}${r} para el estilo "${json.datos.accion}".`;
       ultimoRL = null;
+      cargarHistorial();                               // la gráfica se actualiza con la nueva calificación
     } catch (err) {
       gracias.textContent = `No se pudo enviar: ${err.message}`;
       activarFeedback(true);
     }
   }
-  botonesFeedback[0].addEventListener("click", () => calificar(1));
-  botonesFeedback[1].addEventListener("click", () => calificar(-1));
+
+  // ---------- 5. Gráfica del aprendizaje (Chart.js) ----------
+  let grafica = null;
+  async function cargarHistorial() {
+    const aviso = document.getElementById("estadoGrafica");
+    try {
+      const resp = await fetch(`${API}/rl/historial`);
+      if (!resp.ok) throw new Error(`Error ${resp.status}`);
+      const h = await resp.json();
+      document.getElementById("cifraTotal").textContent = h.total;
+      document.getElementById("cifraPromedio").textContent =
+        h.promedio_actual === null ? "–" : (h.promedio_actual > 0 ? "+" : "") + h.promedio_actual.toFixed(2);
+      aviso.textContent = h.total ? "" : "Todavía no hay calificaciones: analiza una radiografía y califica la recomendación.";
+      dibujarGrafica(h.puntos);
+    } catch (err) {
+      aviso.textContent = `No se pudo cargar el historial del agente: ${err.message}`;
+    }
+  }
+
+  function dibujarGrafica(puntos) {
+    if (typeof Chart === "undefined") {   // sin conexión al CDN: se muestran solo las cifras
+      document.getElementById("estadoGrafica").textContent = "No se pudo cargar la librería de la gráfica.";
+      return;
+    }
+    const etiquetas = puntos.map(p => p.numero);
+    const promedio = puntos.map(p => p.promedio_movil);
+    const recompensas = puntos.map(p => p.recompensa);
+    if (grafica) {
+      grafica.data.labels = etiquetas;
+      grafica.data.datasets[0].data = promedio;
+      grafica.data.datasets[1].data = recompensas;
+      grafica.update();
+      return;
+    }
+    const css = getComputedStyle(document.documentElement);
+    const tinta = css.getPropertyValue("--tinta").trim();
+    const tenue = css.getPropertyValue("--tenue").trim();
+    const linea = css.getPropertyValue("--linea").trim();
+    grafica = new Chart(document.getElementById("grafica"), {
+      type: "line",
+      data: {
+        labels: etiquetas,
+        datasets: [
+          { label: "Promedio móvil (últimas 10)", data: promedio, borderColor: tinta, backgroundColor: tinta,
+            borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.25 },
+          { label: "Recompensa de cada calificación", data: recompensas, borderColor: "transparent",
+            backgroundColor: css.getPropertyValue("--estrella").trim(), pointRadius: 3.5, showLine: false },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          y: { min: -1, max: 1, ticks: { stepSize: 0.5, color: tenue }, grid: { color: linea },
+               title: { display: true, text: "Recompensa", color: tenue } },
+          x: { ticks: { color: tenue, maxTicksLimit: 10 }, grid: { display: false },
+               title: { display: true, text: "Calificación nº", color: tenue } },
+        },
+        plugins: { legend: { labels: { color: tinta, boxWidth: 12 } } },
+      },
+    });
+  }
+  cargarHistorial();
   function mostrarError(msg) {
     salida.classList.add("oculto");
     estado.className = "estado error";

@@ -3,7 +3,8 @@ API de detección de neumonía + recomendación generada con LLM + aprendizaje p
 
 Pipeline:  imagen --POST /predecir--> preprocesamiento --> CNN (predicción)
            --> agente RL elige el estilo --> LLM genera la recomendación con la predicción como input --> JSON
-           usuario: me gusta / no me gusta --POST /rl/feedback--> agente RL actualiza su tabla Q
+           usuario: 1 a 5 estrellas --POST /rl/feedback--> agente RL actualiza su tabla Q
+           GET /rl/historial --> recompensas y promedio móvil (gráfica de la web)
 
 Ejecutar (desde api/):  uvicorn main:app --reload
 Variables de entorno: GEMINI_API_KEY (LLM) y DATABASE_URL (tabla Q en Postgres). Sin ellas funciona
@@ -33,7 +34,9 @@ from ai_edge_litert.interpreter import Interpreter
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from agente_rl import AgenteRecomendaciones, AlmacenArchivo, AlmacenPostgres
 from preprocesamiento import bytes_a_tensor, construir_filtro
@@ -106,7 +109,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "P
 class Feedback(BaseModel):
     estado: str
     accion: str
-    recompensa: float   # +1 me gusta, -1 no me gusta (o un valor intermedio)
+    estrellas: Optional[int] = Field(None, ge=1, le=5)   # 1 a 5 estrellas (lo que envía la web)
+    recompensa: Optional[float] = None                   # alternativa directa: -1 a +1
 
 
 @app.get("/")
@@ -161,7 +165,7 @@ def predecir(imagen: UploadFile = File(...)):
 def feedback(f: Feedback):
     """El usuario califica la recomendación y el agente actualiza su tabla Q."""
     try:
-        datos = AGENTE.registrar_feedback(f.estado, f.accion, f.recompensa)
+        datos = AGENTE.registrar_feedback(f.estado, f.accion, recompensa=f.recompensa, estrellas=f.estrellas)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
     except Exception as err:   # la base de datos no respondió: no se pierde nada, el usuario puede reintentar
@@ -174,3 +178,9 @@ def feedback(f: Feedback):
 def estado_rl():
     """Muestra lo que ha aprendido el agente (tabla Q, epsilon y feedback recibido)."""
     return AGENTE.resumen()
+
+
+@app.get("/rl/historial")
+def historial_rl():
+    """Historial de calificaciones con el promedio móvil de las últimas 10 recompensas (para la gráfica)."""
+    return AGENTE.historial_con_promedio()

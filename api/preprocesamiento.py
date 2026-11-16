@@ -41,12 +41,20 @@ def construir_filtro(config):
     return filtros[nombre]
 
 
-def bytes_a_tensor(contenido: bytes, config, filtro):
-    """Convierte los bytes de la imagen subida en el arreglo que espera el modelo."""
+def bytes_a_gris(contenido: bytes, config):
+    """Pasos 1 y 2: imagen en escala de grises de 224x224 (antes del filtro; es la base del mapa Grad-CAM)."""
     arreglo = np.frombuffer(contenido, dtype=np.uint8)
     img = cv2.imdecode(arreglo, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError("El archivo no es una imagen válida (usa JPG o PNG).")
-    img = cv2.resize(img, (config["img_w"], config["img_h"]), interpolation=cv2.INTER_AREA)
-    img = filtro(img)
-    return img[np.newaxis, :, :, np.newaxis]   # (1, alto, ancho, 1)
+    return cv2.resize(img, (config["img_w"], config["img_h"]), interpolation=cv2.INTER_AREA)
+
+
+def gris_a_tensor(gris, filtro):
+    """Pasos 3 y 4: filtro del config y forma (1, alto, ancho, 1)."""
+    return filtro(gris)[np.newaxis, :, :, np.newaxis]
+
+
+def bytes_a_tensor(contenido: bytes, config, filtro):
+    """Convierte los bytes de la imagen subida en el arreglo que espera el modelo."""
+    return gris_a_tensor(bytes_a_gris(contenido, config), filtro)

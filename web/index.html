@@ -92,6 +92,20 @@
   .etiqueta-estrellas { font-size: .9rem; color: var(--tenue); min-width: 9ch; }
   .gracias { font-size: .92rem; color: var(--normal); font-weight: 700; flex-basis: 100%; }
 
+  /* ---------- Grad-CAM ---------- */
+  .gradcam { background: #fff; border-radius: 14px; padding: 1.25rem; border: 1px solid var(--linea); margin-top: 1.25rem; }
+  .gradcam h2 { font-size: 1.1rem; margin: 0 0 .25rem; }
+  .gradcam .meta { margin: 0 0 .9rem; }
+  .lienzo-mapa { position: relative; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: var(--pelicula); }
+  .lienzo-mapa img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .control-opacidad { display: flex; align-items: center; gap: .75rem; margin-top: .9rem; }
+  .control-opacidad label { font-weight: 700; font-size: .95rem; white-space: nowrap; }
+  .control-opacidad input { flex: 1; min-width: 0; accent-color: var(--tinta); }
+  .control-opacidad output { font-variant-numeric: tabular-nums; min-width: 4ch; text-align: right; }
+  .leyenda-mapa { display: flex; align-items: center; gap: .5rem; font-size: .85rem; color: var(--tenue); margin-top: .6rem; }
+  .escala-jet { flex: 1; height: 10px; border-radius: 5px;
+    background: linear-gradient(90deg, #00008F, #0000FF, #00FFFF, #FFFF00, #FF0000, #800000); }
+
   /* ---------- Asistente de preguntas ---------- */
   .asistente { border-top: 1px solid var(--linea); margin-top: 1.5rem; padding-top: 1.25rem; }
   .asistente h2 { font-size: 1.1rem; margin: 0 0 .25rem; }
@@ -143,6 +157,21 @@
       <div class="acciones">
         <button class="primario" id="analizar" disabled>Analizar radiografía</button>
         <button class="secundario" id="limpiar" type="button">Elegir otra</button>
+      </div>
+
+      <div class="gradcam oculto" id="panelGradcam">
+        <h2>¿Dónde miró la red? (Grad-CAM)</h2>
+        <p class="meta">Zonas que más influyeron en la decisión de la CNN. No señala lesiones: muestra en qué se fijó el modelo.</p>
+        <div class="lienzo-mapa">
+          <img id="baseGradcam" alt="Radiografía tal como la recibe el modelo (224 x 224)">
+          <img id="mapaGradcam" alt="Mapa de calor Grad-CAM superpuesto a la radiografía">
+        </div>
+        <div class="control-opacidad">
+          <label for="opacidad">Opacidad del mapa</label>
+          <input type="range" id="opacidad" min="0" max="100" step="5" value="40">
+          <output id="valorOpacidad" for="opacidad">40 %</output>
+        </div>
+        <div class="leyenda-mapa"><span>Poca influencia</span><span class="escala-jet" aria-hidden="true"></span><span>Mucha</span></div>
       </div>
     </section>
 
@@ -231,6 +260,7 @@
     visor.classList.add("con-imagen");
     botonAnalizar.disabled = false;
     salida.classList.add("oculto");
+    panelGradcam.classList.add("oculto");
     estado.className = "estado";
     estado.textContent = `Imagen lista: ${file.name}`;
   }
@@ -243,7 +273,7 @@
   document.getElementById("limpiar").addEventListener("click", () => {
     imagenElegida = null; archivo.value = ""; vista.removeAttribute("src");
     visor.classList.remove("con-imagen"); botonAnalizar.disabled = true;
-    salida.classList.add("oculto"); estado.className = "estado";
+    salida.classList.add("oculto"); panelGradcam.classList.add("oculto"); estado.className = "estado";
     estado.textContent = "Todavía no hay ninguna imagen analizada.";
   });
 
@@ -282,6 +312,7 @@
     document.getElementById("notaUmbral").textContent =
       `La línea marca el umbral (${porcentaje(r.umbral)}), elegido en validación: por encima se diagnostica PNEUMONIA.`;
 
+    mostrarGradcam(r.gradcam);
     document.getElementById("recomendacion").textContent = r.recomendacion;
     document.getElementById("metaRecomendacion").textContent = r.generado_por_llm
       ? `Generada por ${r.modelo_llm} · estilo "${r.estilo}" elegido por el agente RL (${r.rl.modo})`
@@ -293,6 +324,24 @@
     activarFeedback(true);
     document.getElementById("gracias").textContent = "";
     salida.classList.remove("oculto");
+  }
+
+  // ---------- 3b. Grad-CAM: mapa de calor sobre la radiografía con opacidad ajustable ----------
+  const panelGradcam = document.getElementById("panelGradcam");
+  const mapaGradcam = document.getElementById("mapaGradcam");
+  const opacidad = document.getElementById("opacidad");
+  function aplicarOpacidad() {
+    mapaGradcam.style.opacity = opacidad.value / 100;
+    document.getElementById("valorOpacidad").textContent = `${opacidad.value} %`;
+  }
+  opacidad.addEventListener("input", aplicarOpacidad);
+  function mostrarGradcam(g) {
+    if (!g) { panelGradcam.classList.add("oculto"); return; }
+    document.getElementById("baseGradcam").src = `data:image/png;base64,${g.radiografia_png}`;
+    mapaGradcam.src = `data:image/png;base64,${g.mapa_calor_png}`;
+    opacidad.value = Math.round(g.opacidad_mapa * 100);   // 40 % por defecto, igual que la imagen mezclada
+    aplicarOpacidad();
+    panelGradcam.classList.remove("oculto");
   }
 
   // ---------- 4. Calificación con estrellas → aprendizaje por refuerzo ----------

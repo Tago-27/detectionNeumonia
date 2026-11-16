@@ -1,7 +1,7 @@
 """
 API de detección de neumonía + recomendación generada con LLM + aprendizaje por refuerzo con el feedback del usuario.
 
-Pipeline:  imagen --POST /predecir--> preprocesamiento --> CNN (predicción)
+Pipeline:  imagen --POST /predecir--> preprocesamiento --> CNN (predicción + Grad-CAM)
            --> agente RL elige el estilo --> LLM genera la recomendación con la predicción como input --> JSON
            usuario: 1 a 5 estrellas --POST /rl/feedback--> agente RL actualiza su tabla Q
            GET /rl/historial --> recompensas y promedio móvil (gráfica de la web)
@@ -41,7 +41,8 @@ from pydantic import BaseModel, Field
 
 import asistente
 from agente_rl import AgenteRecomendaciones, AlmacenArchivo, AlmacenPostgres
-from preprocesamiento import bytes_a_tensor, construir_filtro
+import gradcam
+from preprocesamiento import bytes_a_gris, construir_filtro, gris_a_tensor
 import recomendaciones_llm
 from recomendaciones_llm import cargar_llm, generar_recomendacion, llm_cargado
 
@@ -73,14 +74,21 @@ class ModeloTFLite:
         self._interprete = Interpreter(model_path=str(ruta), num_threads=1)
         self._interprete.allocate_tensors()
         self._entrada = self._interprete.get_input_details()[0]["index"]
-        self._salida = self._interprete.get_output_details()[0]["index"]
+        salidas = self._interprete.get_output_details()
+        # Salidas: probabilidades (1, 2) y, si el .tflite se generó para Grad-CAM, activaciones de relu6b (1, 7, 7, 512).
+        self._salida = next(s["index"] for s in salidas if len(s["shape"]) == 2)
+        self._activaciones = next((s["index"] for s in salidas if len(s["shape"]) == 4), None)
         self._candado = threading.Lock()   # el intérprete no admite dos predicciones a la vez
 
-    def predecir(self, x: np.ndarray) -> np.ndarray:
+    def predecir(self, x: np.ndarray):
+        """Devuelve (probabilidades, activaciones de la última capa convolucional o None)."""
         with self._candado:
             self._interprete.set_tensor(self._entrada, x.astype(np.float32))
             self._interprete.invoke()
-            return self._interprete.get_tensor(self._salida)[0].copy()
+            prob = self._interprete.get_tensor(self._salida)[0].copy()
+            act = (self._interprete.get_tensor(self._activaciones)[0].copy()
+                   if self._activaciones is not None else None)
+            return prob, act
 
 
 # 1) La configuración, el modelo, el LLM y el agente se cargan UNA sola vez, al arrancar el servidor.
@@ -90,6 +98,10 @@ CONFIG = json.loads(RUTA_CONFIG.read_text(encoding="utf-8"))
 log_arranque(f"cargando la CNN ({RUTA_MODELO.name})...")
 MODELO = ModeloTFLite(RUTA_MODELO)
 FILTRO = construir_filtro(CONFIG)
+# Grad-CAM: pesos de la cabeza densa (modelo/*_gradcam.npz). Si faltan, la API funciona igual pero sin mapa de calor.
+_npz = sorted(CARPETA_MODELO.glob("*_gradcam.npz"))
+CABEZA_GRADCAM = gradcam.CabezaGradCAM(_npz[0]) if len(_npz) == 1 and MODELO._activaciones is not None else None
+log_arranque("Grad-CAM " + ("listo" if CABEZA_GRADCAM else "NO disponible (falta el .npz o la salida relu6b del .tflite)"))
 CLASES = CONFIG["clases"]
 UMBRAL = float(CONFIG["umbral"])
 TAMANO_MAXIMO = 10 * 1024 * 1024   # 10 MB
@@ -134,6 +146,7 @@ def salud():
     return {"estado": "ok", "modelo": RUTA_MODELO.name, "filtro": CONFIG["filtro"], "umbral": UMBRAL,
             "llm_cargado": llm_cargado(), "modelo_llm": recomendaciones_llm.MODELO_LLM,
             "modelo_llm_segundo_intento": recomendaciones_llm.MODELO_LIGERO,
+            "gradcam": CABEZA_GRADCAM is not None,
             "tabla_q": AGENTE.almacen.descripcion,
             "feedback_recibido": AGENTE.total_feedback}
 
@@ -147,13 +160,23 @@ def predecir(imagen: UploadFile = File(...)):
     if len(contenido) > TAMANO_MAXIMO:
         raise HTTPException(status_code=413, detail="La imagen supera 10 MB.")
     try:
-        x = bytes_a_tensor(contenido, CONFIG, FILTRO)
+        gris = bytes_a_gris(contenido, CONFIG)
+        x = gris_a_tensor(gris, FILTRO)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    prob = MODELO.predecir(x)                        # [P(NORMAL), P(PNEUMONIA)], ya es softmax
+    prob, activaciones = MODELO.predecir(x)          # [P(NORMAL), P(PNEUMONIA)], ya es softmax
     prob_normal, prob_neumonia = float(prob[0]), float(prob[1])
     diagnostico = CLASES[1] if prob_neumonia >= UMBRAL else CLASES[0]
+
+    # 1b) Grad-CAM de la clase predicha. Si falla, se responde igual, sin mapa de calor.
+    mapa = None
+    if CABEZA_GRADCAM is not None:
+        try:
+            cam, _ = CABEZA_GRADCAM.mapa(activaciones, CLASES.index(diagnostico))
+            mapa = gradcam.imagenes(cam, gris)
+        except Exception as err:
+            print(f"Grad-CAM falló: {type(err).__name__}: {err}")
 
     # 2) El agente RL elige el estilo de la recomendación según el diagnóstico y la confianza.
     rl = AGENTE.elegir_estilo(AGENTE.estado(diagnostico, max(prob_normal, prob_neumonia)))
@@ -167,6 +190,7 @@ def predecir(imagen: UploadFile = File(...)):
         "umbral": round(UMBRAL, 4),
         **recomendacion,
         "rl": rl,
+        "gradcam": mapa,   # PNG en base64 (gradcam_png = mezcla con 40 % de mapa) o None
     }
 
 
